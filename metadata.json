@@ -1,0 +1,6 @@
+{
+  "name": "ATP Browser",
+  "description": "Full-featured, privacy-focused modern Android web browser with Keep Alive background sites, custom DNS, ad blocking, and advanced tab management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
