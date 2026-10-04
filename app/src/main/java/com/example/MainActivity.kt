@@ -176,6 +176,36 @@ class MainActivity : ComponentActivity() {
                                             onAccessGranted = { viewModel.navigateBackToBrowser() }
                                         )
                                     }
+                                    ScreenState.EXTENSIONS -> {
+                                        ExtensionManagerScreen(
+                                            viewModel = viewModel,
+                                            onBack = { viewModel.navigateBackToBrowser() }
+                                        )
+                                    }
+                                    ScreenState.EXTENSION_EDITOR -> {
+                                        ExtensionEditorScreen(
+                                            viewModel = viewModel,
+                                            onBack = { viewModel.navigateToScreen(ScreenState.EXTENSIONS) }
+                                        )
+                                    }
+                                    ScreenState.PROXY_SETTINGS -> {
+                                        ProxySettingsScreen(
+                                            viewModel = viewModel,
+                                            onBack = { viewModel.navigateBackToBrowser() }
+                                        )
+                                    }
+                                    ScreenState.PRIVACY_DASHBOARD -> {
+                                        PrivacyDashboardScreen(
+                                            viewModel = viewModel,
+                                            onBack = { viewModel.navigateBackToBrowser() }
+                                        )
+                                    }
+                                    ScreenState.SITE_PERMISSIONS -> {
+                                        SitePermissionsScreen(
+                                            viewModel = viewModel,
+                                            onBack = { viewModel.navigateBackToBrowser() }
+                                        )
+                                    }
                                 }
                             }
                         }

@@ -92,27 +92,104 @@ fun DeveloperModeScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Console (${logs.size})") }
+                    text = { Text("Diagnostics") }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("WebView Info") }
+                    text = { Text("Console (${logs.size})") }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    text = { Text("Page Source") }
+                    text = { Text("WebView Info") }
                 )
                 Tab(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
+                    text = { Text("Page Source") }
+                )
+                Tab(
+                    selected = selectedTab == 4,
+                    onClick = { selectedTab = 4 },
                     text = { Text("User-Agent") }
                 )
             }
 
             when (selectedTab) {
                 0 -> {
+                    // Diagnostics Tab with real measurements and copy
+                    val tabsList by viewModel.tabs.collectAsState()
+                    val proxyState by viewModel.networkManager.proxyManager.proxyState.collectAsState()
+                    val totalAds by com.example.protection.BlockStatsManager.totalAdsBlocked.collectAsState()
+                    val totalTrackers by com.example.protection.BlockStatsManager.totalTrackersBlocked.collectAsState()
+                    val extensionsList by viewModel.extensionManager.extensions.collectAsState()
+
+                    val activeWebViewsCount = tabsList.size
+                    val suspendedCount = tabsList.count { it.isSuspended }
+
+                    val report = remember(tabsList, proxyState, totalAds, totalTrackers, extensionsList, config.performanceMode) {
+                        com.example.performance.DiagnosticsCollector.generateReport(
+                            context = context,
+                            activeWebViews = activeWebViewsCount,
+                            suspendedTabs = suspendedCount,
+                            performanceMode = config.performanceMode,
+                            extensionCount = extensionsList.size,
+                            proxyState = proxyState,
+                            adsBlocked = totalAds,
+                            trackersBlocked = totalTrackers
+                        )
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("System Diagnostics", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                        Button(
+                                            onClick = {
+                                                val text = com.example.performance.DiagnosticsCollector.toFormattedString(report)
+                                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                cm.setPrimaryClip(ClipData.newPlainText("ATP Diagnostics", text))
+                                                Toast.makeText(context, "Diagnostics copied (redacted)", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = CyberCyan, contentColor = MaterialTheme.colorScheme.surface)
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Copy Diagnostics")
+                                        }
+                                    }
+                                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                    InfoPair("Device", report.deviceModel)
+                                    InfoPair("Android OS", report.androidVersion)
+                                    InfoPair("Chromium WebView", report.webViewVersion)
+                                    InfoPair("JVM Memory Used", report.memoryUsageMb)
+                                    InfoPair("Performance Mode", report.performanceMode)
+                                    InfoPair("Active WebViews", "${report.activeWebViews}")
+                                    InfoPair("Suspended Tabs", "${report.suspendedTabs}")
+                                    InfoPair("Extensions Loaded", "${report.extensionCount}")
+                                    InfoPair("Proxy State", report.proxyState)
+                                    InfoPair("Real Ads Blocked", "${report.adsBlocked}")
+                                    InfoPair("Real Trackers Blocked", "${report.trackersBlocked}")
+                                }
+                            }
+                        }
+                    }
+                }
+                1 -> {
                     // Console Logs
                     if (logs.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -131,7 +208,7 @@ fun DeveloperModeScreen(
                         }
                     }
                 }
-                1 -> {
+                2 -> {
                     // WebView Details (Requirement 91)
                     LazyColumn(
                         modifier = Modifier

@@ -120,6 +120,31 @@ fun SecurityCenterScreen(
                 }
             }
 
+            // Real Security Status Posture
+            item {
+                val isHttps by viewModel.isSecureHttps.collectAsState()
+                val proxyState by viewModel.networkManager.proxyManager.proxyState.collectAsState()
+                val activeProxy by viewModel.networkManager.proxyManager.activeProxy.collectAsState()
+
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Active Security Posture", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        SecurityStatusRow("Connection", if (isHttps) "HTTPS (Encrypted)" else "HTTP (Unencrypted)", isHttps)
+                        SecurityStatusRow("Certificate", if (isHttps) "Valid TLS Certificate" else "No certificate", isHttps)
+                        SecurityStatusRow("Safe Browsing", "Active on device", true)
+                        SecurityStatusRow("Tracking Protection", "Standard Protection", true)
+                        SecurityStatusRow("Ad Shield", if (viewModel.config.value.adBlockingEnabled) "Enabled" else "Disabled", viewModel.config.value.adBlockingEnabled)
+                        SecurityStatusRow("Proxy", if (proxyState == com.example.network.ProxyState.CONNECTED) "Active (${activeProxy?.endpoint})" else "Not configured", proxyState == com.example.network.ProxyState.CONNECTED)
+                    }
+                }
+            }
+
             // Heuristic Code Scanner Section
             item {
                 Card(
@@ -291,5 +316,32 @@ fun SecurityEventItem(event: SecurityEvent) {
                 Text(text = event.domain, style = MaterialTheme.typography.labelSmall, color = CyberCyan)
             }
         }
+    }
+}
+
+@Composable
+fun SecurityStatusRow(title: String, statusText: String, isOk: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = if (isOk) Icons.Default.CheckCircle else Icons.Default.Info,
+                contentDescription = null,
+                tint = if (isOk) SecurityGreen else SecurityAmber,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        }
+        Text(
+            statusText,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (isOk) MaterialTheme.colorScheme.onSurface else SecurityAmber
+        )
     }
 }

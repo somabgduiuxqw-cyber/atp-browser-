@@ -12,37 +12,36 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.example.data.db.BrowserTab
 import com.example.data.db.SecurityEvent
 import com.example.data.preferences.BrowserConfig
-import com.example.data.security.AdBlockManager
+import com.example.extensions.ExtensionBridge
+import com.example.protection.AdBlockEngine
+import com.example.protection.BlockStatsManager
+import com.example.protection.SiteExceptionManager
+import com.example.protection.TrackingProtectionMode
+import com.example.security.PermissionValue
+import com.example.security.SitePermissionManager
 import com.example.ui.BrowserViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * TabWebViewManager manages persistent Chromium WebView instances across tabs
- * to prevent reload thrashing, state loss, and memory leaks.
+ * with crash recovery, extensions, real ad/tracker blocking, and site permissions.
  */
 object TabWebViewManager {
     private const val TAG = "TabWebViewManager"
 
-    // Active WebView instances mapped by tab ID
     private val webViewMap = ConcurrentHashMap<Long, WebView>()
-    // Tracking access time for LRU tab suspension
     private val lastAccessMap = ConcurrentHashMap<Long, Long>()
-
-    // Transparent 1x1 PNG bytes for cleanly blocking image advertisements
-    private val TRANSPARENT_1X1_PNG: ByteArray by lazy {
-        android.util.Base64.decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
-            android.util.Base64.DEFAULT
-        )
-    }
 
     fun getWebView(tabId: Long): WebView? {
         return webViewMap[tabId]
@@ -62,7 +61,6 @@ object TabWebViewManager {
             return existing
         }
 
-        // Apply performance mode limits before creating new WebView
         pruneExcessWebViews(tab.id, viewModel.config.value.performanceMode)
 
         val webView = WebView(context.applicationContext).apply {
@@ -91,7 +89,11 @@ object TabWebViewManager {
                 displayZoomControls = false
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                cacheMode = WebSettings.LOAD_DEFAULT
+                cacheMode = if (viewModel.config.value.performanceMode == "Fast") {
+                    WebSettings.LOAD_DEFAULT
+                } else {
+                    WebSettings.LOAD_DEFAULT
+                }
                 mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             }
 
@@ -104,6 +106,16 @@ object TabWebViewManager {
                 cookieManager.setAcceptThirdPartyCookies(this, true)
             }
 
+            // Register controlled extension bridge
+            addJavascriptInterface(
+                ExtensionBridge(
+                    storageManager = viewModel.extensionManager.storageManager,
+                    logCallback = { extId, msg -> viewModel.extensionManager.addLog(extId, "INFO", msg) },
+                    webViewProvider = { this }
+                ),
+                "_ATPBridge"
+            )
+
             val redirectHistory = mutableListOf<String>()
             val scope = CoroutineScope(Dispatchers.Main)
 
@@ -113,6 +125,13 @@ object TabWebViewManager {
                     val uri = request?.url ?: return false
                     val urlStr = uri.toString()
                     val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: ""
+
+                    // HTTPS-Only Mode upgrade
+                    if (viewModel.config.value.httpsOnlyMode && scheme == "http") {
+                        val httpsUri = uri.buildUpon().scheme("https").build()
+                        view?.loadUrl(httpsUri.toString())
+                        return true
+                    }
 
                     // Check redirect loop
                     redirectHistory.add(urlStr)
@@ -151,23 +170,39 @@ object TabWebViewManager {
                 }
 
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    // NEVER block the main page frame
-                    if (request?.isForMainFrame == true) {
-                        return super.shouldInterceptRequest(view, request)
-                    }
-
                     val reqUrl = request?.url?.toString() ?: return null
+                    val isMainFrame = request.isForMainFrame
                     val pageHost = try { Uri.parse(view?.url ?: "").host } catch (e: Exception) { null }
 
-                    val decision = AdBlockManager.shouldBlock(reqUrl, pageHost)
-                    if (decision is AdBlockManager.BlockDecision.Blocked) {
+                    val trackingMode = when (viewModel.config.value.performanceMode) {
+                        else -> TrackingProtectionMode.STANDARD
+                    }
+
+                    val decision = AdBlockEngine.evaluate(
+                        requestUrl = reqUrl,
+                        pageHost = pageHost,
+                        isMainFrame = isMainFrame,
+                        adBlockingEnabled = viewModel.config.value.adBlockingEnabled,
+                        trackingMode = trackingMode
+                    )
+
+                    if (decision is AdBlockEngine.FilterDecision.Block) {
+                        // Record real blocked stats
+                        BlockStatsManager.recordBlock(
+                            domain = pageHost ?: "Unknown",
+                            url = reqUrl,
+                            resourceType = decision.resourceType,
+                            reason = decision.reason,
+                            isTracker = decision.isTracker
+                        )
+
                         scope.launch(Dispatchers.IO) {
                             try {
                                 viewModel.db.insertSecurityEvent(
                                     SecurityEvent(
                                         domain = pageHost ?: "Unknown",
-                                        eventType = if (decision.reason.contains("Tracker")) "Blocked Tracker" else "Blocked Ad",
-                                        details = "${decision.reason}: ${decision.pattern}"
+                                        eventType = if (decision.isTracker) "Blocked Tracker" else "Blocked Ad",
+                                        details = "${decision.reason}: ${decision.resourceType}"
                                     )
                                 )
                             } catch (e: Exception) {
@@ -177,9 +212,9 @@ object TabWebViewManager {
 
                         val lower = reqUrl.lowercase(Locale.ROOT)
                         return when {
-                            // Google AdSense defuser: provide stub to avoid JavaScript TypeErrors
+                            // Google AdSense defuser stub
                             lower.contains("adsbygoogle") -> {
-                                val script = "window.adsbygoogle = window.adsbygoogle || []; window.adsbygoogle.loaded = true;"
+                                val script = "window.adsbygoogle = window.adsbygoogle || []; window.adsbygoogle.loaded = true; window.adsbygoogle.push = function(){ return 0; };"
                                 WebResourceResponse("application/javascript", "UTF-8", ByteArrayInputStream(script.toByteArray()))
                             }
                             // Google Analytics / GTag defuser
@@ -210,7 +245,7 @@ object TabWebViewManager {
                             // Images: return 1x1 transparent PNG
                             lower.endsWith(".png") || lower.endsWith(".gif") || lower.endsWith(".jpg") ||
                             lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.contains("banner") -> {
-                                WebResourceResponse("image/png", "UTF-8", ByteArrayInputStream(TRANSPARENT_1X1_PNG))
+                                WebResourceResponse("image/png", "UTF-8", ByteArrayInputStream(AdBlockEngine.TRANSPARENT_1X1_PNG))
                             }
                             // CSS
                             lower.endsWith(".css") -> {
@@ -242,8 +277,16 @@ object TabWebViewManager {
                         )
                     }
 
-                    // Cosmetic Ad Blocker Injection (Hides ad containers without breaking site layout)
-                    if (viewModel.config.value.adBlockingEnabled) {
+                    val pageHost = url?.let {
+                        try {
+                            Uri.parse(it).host?.lowercase(Locale.ROOT)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+
+                    // Cosmetic Ad Blocker Injection
+                    if (viewModel.config.value.adBlockingEnabled && (pageHost == null || !SiteExceptionManager.isShieldDisabled(pageHost))) {
                         val cosmeticJs = """
                             (function() {
                                 var css = '.adsbygoogle, [id^="google_ads"], [id^="div-gpt-ad"], .ad-banner, .advertisement, [class*="sponsored"], [class*="ad-container"], .ad-box, .banner-ad, [data-ad], #ad-container, div[class*="ad-box"] { display: none !important; visibility: hidden !important; height: 0 !important; max-height: 0 !important; }';
@@ -258,10 +301,14 @@ object TabWebViewManager {
                         """.trimIndent()
                         view?.evaluateJavascript(cosmeticJs, null)
                     }
+
+                    // Extensions Injection
+                    url?.let { pageUrl ->
+                        injectExtensions(view, pageUrl, viewModel)
+                    }
                 }
 
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                    // CRITICAL: Never bypass TLS certificate errors. Never silently weaken WebView security.
                     handler?.cancel()
                     val errUrl = error?.url ?: "Unknown URL"
                     scope.launch(Dispatchers.IO) {
@@ -280,10 +327,8 @@ object TabWebViewManager {
                 }
 
                 override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-                    // CRITICAL STABILITY: Handle render process termination gracefully instead of crashing the entire Android application
                     Log.w(TAG, "Render process gone for tab ${tab.id}. Did crash: ${detail?.didCrash()}")
                     destroyTab(tab.id)
-                    // Inform viewModel to recover active tab cleanly
                     scope.launch {
                         viewModel.onTabProcessCrashed(tab.id)
                     }
@@ -326,14 +371,46 @@ object TabWebViewManager {
                 }
 
                 override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
-                    callback?.invoke(origin, true, false)
+                    val host = try { Uri.parse(origin ?: "").host ?: "" } catch (e: Exception) { "" }
+                    val perm = SitePermissionManager.getPermissions(host).location
+                    val allow = perm == PermissionValue.ALLOW
+                    callback?.invoke(origin, allow, false)
                 }
 
                 override fun onPermissionRequest(request: PermissionRequest?) {
-                    request?.grant(request.resources)
+                    val origin = request?.origin?.host ?: ""
+                    val perms = SitePermissionManager.getPermissions(origin)
+                    val resources = request?.resources ?: return
+
+                    val granted = mutableListOf<String>()
+                    for (r in resources) {
+                        when (r) {
+                            PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
+                                if (perms.microphone == PermissionValue.ALLOW) granted.add(r)
+                            }
+                            PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
+                                if (perms.camera == PermissionValue.ALLOW) granted.add(r)
+                            }
+                            else -> granted.add(r)
+                        }
+                    }
+
+                    if (granted.isNotEmpty()) {
+                        request.grant(granted.toTypedArray())
+                    } else {
+                        request.deny()
+                    }
                 }
 
                 override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+                    val origin = try { Uri.parse(view?.url ?: "").host ?: "" } catch (e: Exception) { "" }
+                    val perms = SitePermissionManager.getPermissions(origin)
+
+                    // Check popup permission
+                    if (perms.popups == PermissionValue.BLOCK && !isUserGesture) {
+                        return false
+                    }
+
                     if (isUserGesture) {
                         val transport = resultMsg?.obj as? WebView.WebViewTransport
                         val newWebView = WebView(context.applicationContext)
@@ -372,13 +449,93 @@ object TabWebViewManager {
         return webView
     }
 
+    private fun injectExtensions(view: WebView?, pageUrl: String, viewModel: BrowserViewModel) {
+        val injections = viewModel.extensionManager.getInjectionsForUrl(pageUrl)
+        if (injections.isEmpty()) return
+
+        for ((ext, codePair) in injections) {
+            val (script, styles) = codePair
+
+            // Inject CSS safely
+            if (styles.isNotBlank()) {
+                val escapedCss = JSONObject.quote(styles)
+                val cssInjector = """
+                    (function() {
+                        var styleId = 'atp-ext-${ext.id}';
+                        var existing = document.getElementById(styleId);
+                        if (!existing) {
+                            var style = document.createElement('style');
+                            style.id = styleId;
+                            style.type = 'text/css';
+                            style.appendChild(document.createTextNode($escapedCss));
+                            (document.head || document.documentElement).appendChild(style);
+                        }
+                    })();
+                """.trimIndent()
+                view?.evaluateJavascript(cssInjector, null)
+            }
+
+            // Inject Script safely with try/catch error boundary
+            if (script.isNotBlank()) {
+                val scriptInjector = """
+                    (function() {
+                        try {
+                            if (window._ATPBridge) {
+                                window.ATPBrowser = window.ATPBrowser || {
+                                    _extId: "${ext.id}",
+                                    log: function(msg) { window._ATPBridge.log("${ext.id}", String(msg)); },
+                                    storage: {
+                                        get: function(key, cb) {
+                                            var cbName = '__atp_cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+                                            window[cbName] = function(val) { delete window[cbName]; if (typeof cb === 'function') cb(val); };
+                                            window._ATPBridge.storageGet("${ext.id}", String(key), cbName);
+                                        },
+                                        set: function(key, val, cb) {
+                                            var cbName = '__atp_cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+                                            window[cbName] = function(res) { delete window[cbName]; if (typeof cb === 'function') cb(res); };
+                                            window._ATPBridge.storageSet("${ext.id}", String(key), String(val), cbName);
+                                        },
+                                        remove: function(key, cb) {
+                                            var cbName = '__atp_cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+                                            window[cbName] = function(res) { delete window[cbName]; if (typeof cb === 'function') cb(res); };
+                                            window._ATPBridge.storageRemove("${ext.id}", String(key), cbName);
+                                        },
+                                        clear: function(cb) {
+                                            var cbName = '__atp_cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+                                            window[cbName] = function(res) { delete window[cbName]; if (typeof cb === 'function') cb(res); };
+                                            window._ATPBridge.storageClear("${ext.id}", cbName);
+                                        }
+                                    },
+                                    tabs: {
+                                        getCurrent: function(cb) {
+                                            var cbName = '__atp_cb_' + Date.now() + '_' + Math.floor(Math.random()*10000);
+                                            window[cbName] = function(info) { delete window[cbName]; if (typeof cb === 'function') cb(JSON.parse(info)); };
+                                            window._ATPBridge.getCurrentTab(cbName);
+                                        }
+                                    }
+                                };
+                            }
+                            // Execute extension code
+                            $script
+                        } catch (err) {
+                            if (window._ATPBridge) {
+                                window._ATPBridge.log("${ext.id}", "Runtime Error: " + err.message);
+                            }
+                        }
+                    })();
+                """.trimIndent()
+                view?.evaluateJavascript(scriptInjector, null)
+            }
+        }
+    }
+
     fun updateTabSettings(webView: WebView, tab: BrowserTab, config: BrowserConfig) {
         val targetUa = if (tab.desktopMode) {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
         } else if (config.customUserAgent.isNotBlank()) {
             config.customUserAgent
         } else {
-            null // Default mobile WebView UA
+            null
         }
 
         if (webView.settings.userAgentString != targetUa) {
@@ -428,14 +585,13 @@ object TabWebViewManager {
 
     private fun pruneExcessWebViews(currentTabId: Long, performanceMode: String) {
         val maxActive = when (performanceMode) {
-            "Performance" -> 10
+            "Performance", "Fast" -> 10
             "Battery Saver" -> 3
             else -> 6 // Balanced
         }
 
         if (webViewMap.size < maxActive) return
 
-        // Find least recently used tab that is not current tab
         val candidate = lastAccessMap.entries
             .filter { it.key != currentTabId }
             .minByOrNull { it.value }

@@ -62,7 +62,12 @@ enum class ScreenState {
     HISTORY_BOOKMARKS,
     SETTINGS,
     DEVELOPER_MODE,
-    ACCESS_KEY
+    ACCESS_KEY,
+    EXTENSIONS,
+    EXTENSION_EDITOR,
+    PROXY_SETTINGS,
+    PRIVACY_DASHBOARD,
+    SITE_PERMISSIONS
 }
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -72,6 +77,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val preferences: BrowserPreferences = app.preferences
 
     val config: StateFlow<BrowserConfig> = preferences.configFlow
+
+    // Extensions & Network Managers
+    val extensionManager = com.example.extensions.ExtensionManager(application)
+    val networkManager = com.example.network.NetworkManager(application)
+
+    // Editing Extension ID for Extension Editor
+    val editingExtensionId = MutableStateFlow<String?>(null)
+
+    // Renderer Crash Recovery
+    private val _rendererCrashedTabId = MutableStateFlow<Long?>(null)
+    val rendererCrashedTabId: StateFlow<Long?> = _rendererCrashedTabId.asStateFlow()
+
+    // Proxy testing states
+    private val _proxyTestResult = MutableStateFlow<com.example.network.ProxyTestResult?>(null)
+    val proxyTestResult: StateFlow<com.example.network.ProxyTestResult?> = _proxyTestResult.asStateFlow()
+
+    private val _isTestingProxy = MutableStateFlow(false)
+    val isTestingProxy: StateFlow<Boolean> = _isTestingProxy.asStateFlow()
 
     // Navigation Screens
     private val _currentScreen = MutableStateFlow(ScreenState.BROWSER)
@@ -217,6 +240,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun navigateToScreen(screen: ScreenState) {
         _currentScreen.value = screen
     }
+
+    fun setScreen(screen: ScreenState) = navigateToScreen(screen)
 
     fun navigateBackToBrowser() {
         _currentScreen.value = ScreenState.BROWSER
@@ -372,12 +397,63 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onTabProcessCrashed(tabId: Long) {
-        viewModelScope.launch {
-            val tab = db.getTabById(tabId) ?: return@launch
-            if (tab.url.isNotBlank() && tab.url != "about:home") {
-                loadUrl(tab.url)
+        _rendererCrashedTabId.value = tabId
+    }
+
+    fun recoverCrashedTab(tabId: Long, reload: Boolean) {
+        _rendererCrashedTabId.value = null
+        if (reload) {
+            viewModelScope.launch {
+                val tab = db.getTabById(tabId) ?: return@launch
+                if (tab.url.isNotBlank() && tab.url != "about:home") {
+                    loadUrl(tab.url)
+                }
             }
+        } else {
+            closeTab(tabId)
         }
+    }
+
+    // --- Shield & Protection ---
+    fun isShieldDisabledForCurrentSite(): Boolean {
+        val host = try { Uri.parse(_currentUrl.value).host } catch (e: Exception) { null } ?: return false
+        return com.example.protection.SiteExceptionManager.isShieldDisabled(host)
+    }
+
+    fun toggleShieldForCurrentSite() {
+        val host = try { Uri.parse(_currentUrl.value).host } catch (e: Exception) { null } ?: return
+        if (com.example.protection.SiteExceptionManager.isShieldDisabled(host)) {
+            com.example.protection.SiteExceptionManager.enableShieldForSite(host)
+        } else {
+            com.example.protection.SiteExceptionManager.disableShieldForSite(host)
+        }
+    }
+
+    // --- Proxy Actions ---
+    fun testProxy(endpoint: String) {
+        viewModelScope.launch {
+            _isTestingProxy.value = true
+            _proxyTestResult.value = networkManager.proxyManager.testConnection(endpoint)
+            _isTestingProxy.value = false
+        }
+    }
+
+    fun applyUserProxy(endpoint: String, bypassRules: List<String>, onResult: (Boolean, String?) -> Unit) {
+        networkManager.proxyManager.applyProxy(endpoint, bypassRules, "User", onResult)
+    }
+
+    fun clearProxy(onComplete: (() -> Unit)? = null) {
+        networkManager.proxyManager.clearProxy(onComplete)
+    }
+
+    // --- Extensions Navigation ---
+    fun openExtensionEditor(extensionId: String? = null) {
+        editingExtensionId.value = extensionId
+        _currentScreen.value = ScreenState.EXTENSION_EDITOR
+    }
+
+    fun setPerformanceMode(mode: String) {
+        preferences.updateConfig { it.copy(performanceMode = mode) }
     }
 
     private fun resolveInputToUrl(input: String): String {

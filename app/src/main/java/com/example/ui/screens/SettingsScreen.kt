@@ -192,6 +192,44 @@ fun SettingsScreen(
                 )
             }
 
+            // Extensions
+            item {
+                SettingsSectionTitle("ATP EXTENSIONS")
+            }
+
+            item {
+                SettingsNavigationItem(
+                    title = "Extension Manager",
+                    subtitle = "Manage custom scripts, themes, and extensions",
+                    icon = Icons.Default.Extension,
+                    onClick = { viewModel.navigateToScreen(ScreenState.EXTENSIONS) }
+                )
+            }
+
+            item {
+                SettingsNavigationItem(
+                    title = "Create Extension",
+                    subtitle = "Write or edit config.js, script.js, and styles.css",
+                    icon = Icons.Default.Code,
+                    onClick = { viewModel.openExtensionEditor(null) }
+                )
+            }
+
+            // Network & Proxy
+            item {
+                SettingsSectionTitle("NETWORK & PROXY")
+            }
+
+            item {
+                val proxyState by viewModel.networkManager.proxyManager.proxyState.collectAsState()
+                SettingsNavigationItem(
+                    title = "User Proxy",
+                    subtitle = "Status: ${proxyState.name} • AndroidX WebKit ProxyController",
+                    icon = Icons.Default.VpnLock,
+                    onClick = { viewModel.navigateToScreen(ScreenState.PROXY_SETTINGS) }
+                )
+            }
+
             item {
                 SettingsNavigationItem(
                     title = "Custom DNS Resolver",
@@ -204,6 +242,33 @@ fun SettingsScreen(
             // Privacy & Content Protection
             item {
                 SettingsSectionTitle("PRIVACY & PROTECTION")
+            }
+
+            item {
+                SettingsNavigationItem(
+                    title = "ATP Security Center",
+                    subtitle = "View connection, certificate, and safe browsing posture",
+                    icon = Icons.Default.Security,
+                    onClick = { viewModel.navigateToScreen(ScreenState.SECURITY_CENTER) }
+                )
+            }
+
+            item {
+                SettingsNavigationItem(
+                    title = "Privacy Dashboard",
+                    subtitle = "Real-time statistics, site exceptions, and blocked logs",
+                    icon = Icons.Default.Shield,
+                    onClick = { viewModel.navigateToScreen(ScreenState.PRIVACY_DASHBOARD) }
+                )
+            }
+
+            item {
+                SettingsNavigationItem(
+                    title = "Site Permissions & Data",
+                    subtitle = "Manage camera, microphone, cookies, and clear site data",
+                    icon = Icons.Default.PermDeviceInformation,
+                    onClick = { viewModel.navigateToScreen(ScreenState.SITE_PERMISSIONS) }
+                )
             }
 
             item {
