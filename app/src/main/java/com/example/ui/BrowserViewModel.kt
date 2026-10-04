@@ -242,12 +242,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _currentUrl.value = tab.url
             _currentTitle.value = tab.title
             db.updateTab(tab.copy(lastAccessed = System.currentTimeMillis(), isSuspended = false))
+            com.example.ui.browser.TabWebViewManager.resumeTab(tabId)
+            val webView = com.example.ui.browser.TabWebViewManager.getWebView(tabId)
+            _canGoBack.value = webView?.canGoBack() ?: false
+            _canGoForward.value = webView?.canGoForward() ?: false
             _currentScreen.value = ScreenState.BROWSER
         }
     }
 
     fun closeTab(tabId: Long) {
         viewModelScope.launch {
+            com.example.ui.browser.TabWebViewManager.destroyTab(tabId)
             val tabToClose = db.getTabById(tabId)
             if (tabToClose != null && !tabToClose.incognito) {
                 closedTabsStack.push(tabToClose)
@@ -262,18 +267,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 _activeTabId.value = next.id
                 _currentUrl.value = next.url
                 _currentTitle.value = next.title
+                com.example.ui.browser.TabWebViewManager.resumeTab(next.id)
             }
         }
     }
 
     fun closeOtherTabs(tabId: Long, isIncognito: Boolean) {
         viewModelScope.launch {
+            val all = db.getAllTabs().first()
+            for (t in all) {
+                if (t.id != tabId && t.incognito == isIncognito) {
+                    com.example.ui.browser.TabWebViewManager.destroyTab(t.id)
+                }
+            }
             db.deleteOtherTabs(tabId, isIncognito)
         }
     }
 
     fun closeTabsToRight(tabId: Long, isIncognito: Boolean) {
         viewModelScope.launch {
+            val all = db.getAllTabs().first().filter { it.incognito == isIncognito }
+            val index = all.indexOfFirst { it.id == tabId }
+            if (index != -1 && index < all.size - 1) {
+                val toRight = all.subList(index + 1, all.size)
+                for (t in toRight) {
+                    com.example.ui.browser.TabWebViewManager.destroyTab(t.id)
+                }
+            }
             db.deleteTabsToRight(tabId, isIncognito)
         }
     }
@@ -339,6 +359,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun loadUrl(url: String) {
         _currentUrl.value = url
         val currentId = _activeTabId.value ?: return
+        com.example.ui.browser.TabWebViewManager.loadUrl(currentId, url)
         viewModelScope.launch {
             val tab = db.getTabById(currentId) ?: return@launch
             db.updateTab(tab.copy(url = url, lastAccessed = System.currentTimeMillis(), isSuspended = false))
@@ -346,6 +367,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             // Save history if not incognito
             if (!tab.incognito && !url.startsWith("about:")) {
                 db.insertHistory(HistoryEntry(url = url, title = _currentTitle.value))
+            }
+        }
+    }
+
+    fun onTabProcessCrashed(tabId: Long) {
+        viewModelScope.launch {
+            val tab = db.getTabById(tabId) ?: return@launch
+            if (tab.url.isNotBlank() && tab.url != "about:home") {
+                loadUrl(tab.url)
             }
         }
     }
@@ -584,6 +614,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 android.webkit.CookieManager.getInstance().flush()
             }
             if (clearCache) {
+                com.example.ui.browser.TabWebViewManager.destroyAll()
                 android.webkit.WebStorage.getInstance().deleteAllData()
             }
             if (clearPartialDownloads) {

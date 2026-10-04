@@ -205,6 +205,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        try {
+            android.webkit.CookieManager.getInstance().flush()
+        } catch (e: Exception) {
+            // Protect against webview uninitialized
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleWebIntent(intent)

@@ -10,52 +10,166 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object AdBlockManager {
 
-    // Known ad & tracking domain substrings and hosts
+    // Major ad serving networks, SSPs, DSPs, and banner providers
     private val KNOWN_AD_DOMAINS = hashSetOf(
+        // Google & DoubleClick
         "doubleclick.net",
         "googlesyndication.com",
         "googleadservices.com",
         "adservice.google.com",
-        "adnxs.com",
-        "criteo.com",
-        "outbrain.com",
+        "pagead2.googlesyndication.com",
+        "securepubads.g.doubleclick.net",
+        "googletagservices.com",
+        "admob.com",
+        "2mdn.net",
+
+        // Amazon
+        "amazon-adsystem.com",
+        "aax.amazon-adsystem.com",
+        "c.amazon-adsystem.com",
+
+        // Content recommendation & native ads
         "taboola.com",
+        "cdn.taboola.com",
+        "outbrain.com",
+        "widgets.outbrain.com",
+        "zemanta.com",
+        "mgid.com",
+        "revcontent.com",
+        "zergnet.com",
+
+        // Retargeting & programmatic networks
+        "criteo.com",
+        "criteo.net",
+        "static.criteo.net",
+        "adnxs.com",
         "pubmatic.com",
         "rubiconproject.com",
-        "amazon-adsystem.com",
-        "adcolony.com",
-        "unityads.unity3d.com",
-        "vungle.com",
-        "applvn.com",
+        "openx.net",
+        "smartadserver.com",
+        "casalemedia.com",
+        "indexexchange.com",
+        "sovrn.com",
+        "triplelift.com",
+        "yieldmo.com",
+        "sharethrough.com",
+        "sonobi.com",
+        "smartclip.net",
+        "teads.tv",
+        "gumgum.com",
+        "infolinks.com",
+        "media.net",
+        "bidswitch.net",
+        "bidvertiser.com",
+        "adroll.com",
+        "adpushup.com",
+        "ezoic.com",
+        "ezoic.net",
+        "buysellads.com",
+        "adblade.com",
+        "skimresources.com",
+        "viglink.com",
+        "clicksor.com",
+        "moatads.com",
+
+        // Popups, popunders & high-risk networks
         "popcash.net",
         "popads.net",
         "exoclick.com",
         "trafficjunky.com",
-        "admob.com",
-        "pagead2.googlesyndication.com"
+        "propellerads.com",
+        "adsterra.com",
+        "hilltopads.com",
+
+        // Mobile ad SDK networks
+        "adcolony.com",
+        "unityads.unity3d.com",
+        "vungle.com",
+        "applvn.com",
+        "applovin.com",
+        "ironsrc.com",
+        "fyber.com",
+        "tapjoy.com",
+        "chartboost.com",
+        "inmobi.com",
+
+        // Yandex ads
+        "an.yandex.ru",
+        "direct.yandex.ru"
     )
 
+    // Trackers, analytics, heatmaps, and telemetry
     private val KNOWN_TRACKER_DOMAINS = hashSetOf(
+        // Google analytics & Tag Manager
         "google-analytics.com",
         "analytics.google.com",
+        "googletagmanager.com",
+
+        // Web telemetry & Session recording
         "hotjar.com",
+        "static.hotjar.com",
+        "script.hotjar.com",
+        "clarity.ms",
         "mixpanel.com",
+        "amplitude.com",
         "segment.io",
         "segment.com",
-        "amplitude.com",
         "scorecardresearch.com",
         "quantserve.com",
-        "facebook.com/tr",
-        "connect.facebook.net/en_US/fbevents.js",
-        "ads-twitter.com",
         "statcounter.com",
-        "clarity.ms",
+        "chartbeat.com",
+        "mouseflow.com",
+        "crazyegg.com",
         "newrelic.com",
         "sentry.io",
+        "bugsnag.com",
+        "mc.yandex.ru",
+
+        // Social conversion & tracking pixels
+        "connect.facebook.net",
+        "pixel.facebook.com",
+        "ads-twitter.com",
+        "static.ads-twitter.com",
+        "analytics.tiktok.com",
+        "snap.licdn.com",
+        "bat.bing.com",
+
+        // Cryptominers
         "coinhive.com",
         "coin-hive.com",
         "cryptoloot.pro",
         "webminepool.com"
+    )
+
+    // Script and URL path patterns tested by AdBlock Tester and typical ad scripts
+    private val AD_PATH_PATTERNS = listOf(
+        "/adsbygoogle.js",
+        "/pagead/",
+        "/tag/js/gpt.js",
+        "/prebid.js",
+        "/apstag.js",
+        "/outbrain.js",
+        "/ads.js",
+        "/advert.js",
+        "/adframe.js",
+        "/advertising.js",
+        "/banner.js",
+        "/ad_banner",
+        "/ad-banner",
+        "banner_728x90",
+        "banner_300x250",
+        "banner_160x600",
+        "banner_320x50",
+        "banner_468x60"
+    )
+
+    private val TRACKER_PATH_PATTERNS = listOf(
+        "/analytics.js",
+        "/gtag/js",
+        "/ga.js",
+        "/fbevents.js",
+        "/uwt.js",
+        "/metrika/watch.js"
     )
 
     private val customBlockList = ConcurrentHashMap.newKeySet<String>()
@@ -106,6 +220,7 @@ object AdBlockManager {
     fun shouldBlock(requestUrl: String, pageDomain: String? = null): BlockDecision {
         val uri = try { Uri.parse(requestUrl) } catch (e: Exception) { return BlockDecision.Allowed }
         val host = uri.host?.lowercase(Locale.ROOT) ?: return BlockDecision.Allowed
+        val path = uri.path?.lowercase(Locale.ROOT) ?: ""
         val fullUrl = requestUrl.lowercase(Locale.ROOT)
 
         // Check user custom allowlist first
@@ -129,6 +244,13 @@ object AdBlockManager {
                     return BlockDecision.Blocked("Known Tracker Blocked", tracker)
                 }
             }
+
+            for (pattern in TRACKER_PATH_PATTERNS) {
+                if (path.contains(pattern) || fullUrl.contains(pattern)) {
+                    recordBlock(pageDomain ?: host, isTracker = true)
+                    return BlockDecision.Blocked("Tracker Script Blocked", pattern)
+                }
+            }
         }
 
         // Check Ad Blocking
@@ -137,6 +259,13 @@ object AdBlockManager {
                 if (host.contains(ad) || fullUrl.contains(ad)) {
                     recordBlock(pageDomain ?: host, isTracker = false)
                     return BlockDecision.Blocked("Known Ad Domain Blocked", ad)
+                }
+            }
+
+            for (pattern in AD_PATH_PATTERNS) {
+                if (path.contains(pattern) || fullUrl.contains(pattern)) {
+                    recordBlock(pageDomain ?: host, isTracker = false)
+                    return BlockDecision.Blocked("Ad Pattern Blocked", pattern)
                 }
             }
         }

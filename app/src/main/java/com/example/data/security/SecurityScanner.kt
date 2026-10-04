@@ -51,9 +51,9 @@ object SecurityScanner {
             }
         }
 
-        // Check suspicious file download in URL path
+        // Check direct script/binary download in URL path
         val ext = path.substringAfterLast('.', "")
-        if (RISKY_EXTENSIONS.contains(ext)) {
+        if (ext == "apk" || ext == "sh" || ext == "py") {
             findings.add("URL links directly to potentially executable content (.$ext)")
         }
 

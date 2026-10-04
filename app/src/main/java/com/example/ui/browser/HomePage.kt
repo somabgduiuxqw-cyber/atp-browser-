@@ -133,6 +133,17 @@ fun HomePage(
                     }
                 },
                 singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                    onSearch = {
+                        if (searchInput.isNotBlank()) {
+                            onNavigate(searchInput)
+                        }
+                    }
+                ),
                 shape = RoundedCornerShape(28.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = CyberCyan,

@@ -1,12 +1,13 @@
 package com.example.ui.browser
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.webkit.WebChromeClient
 import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
@@ -15,6 +16,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,21 +26,25 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.security.AdBlockManager
 import com.example.ui.BrowserViewModel
 import com.example.ui.ScreenState
 import com.example.ui.dialogs.PageInfoDialog
 import com.example.ui.theme.CyberCyan
-import com.example.ui.theme.SecurityGreen
 import com.example.ui.theme.SecurityAmber
-import com.example.ui.theme.SecurityRed
+import com.example.ui.theme.SecurityGreen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,6 +54,8 @@ fun BrowserScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     val currentUrl by viewModel.currentUrl.collectAsState()
     val loadingProgress by viewModel.loadingProgress.collectAsState()
     val canGoBack by viewModel.canGoBack.collectAsState()
@@ -67,13 +77,23 @@ fun BrowserScreen(
     val findQuery by viewModel.findQuery.collectAsState()
     val findMatches by viewModel.findMatches.collectAsState()
 
-    BackHandler(enabled = (currentUrl != "about:home" && currentUrl.isNotBlank()) || isEditingUrl || isFindActive) {
+    BackHandler(enabled = true) {
         if (isFindActive) {
             viewModel.closeFindInPage()
         } else if (isEditingUrl) {
             isEditingUrl = false
+            keyboardController?.hide()
         } else {
-            viewModel.triggerGoBack()
+            val activeWebView = TabWebViewManager.getWebView(activeTabId ?: -1)
+            if (activeWebView != null && activeWebView.canGoBack()) {
+                activeWebView.goBack()
+            } else if (currentUrl != "about:home" && currentUrl.isNotBlank()) {
+                viewModel.loadUrl("about:home")
+            } else if (tabs.size > 1) {
+                viewModel.navigateToScreen(ScreenState.TABS_TRAY)
+            } else {
+                (context as? Activity)?.moveTaskToBack(true)
+            }
         }
     }
 
@@ -94,14 +114,22 @@ fun BrowserScreen(
                     },
                     onSubmit = {
                         isEditingUrl = false
+                        keyboardController?.hide()
                         viewModel.onUrlSubmitted(urlInputText)
                     },
-                    onCancelEdit = { isEditingUrl = false },
+                    onCancelEdit = {
+                        isEditingUrl = false
+                        keyboardController?.hide()
+                    },
                     loadingProgress = loadingProgress,
                     isSecure = isSecureHttps,
                     tabCount = tabs.size,
                     isIncognito = activeTab?.incognito == true,
-                    onTabsClick = { viewModel.navigateToScreen(ScreenState.TABS_TRAY) },
+                    onTabsClick = {
+                        isEditingUrl = false
+                        keyboardController?.hide()
+                        viewModel.navigateToScreen(ScreenState.TABS_TRAY)
+                    },
                     onSecurityClick = { showPageInfo = true },
                     onMenuClick = { showMenu = true }
                 )
@@ -133,11 +161,17 @@ fun BrowserScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val isBackEnabled = canGoBack || (currentUrl != "about:home" && currentUrl.isNotBlank())
                         IconButton(
                             onClick = { viewModel.triggerGoBack() },
+                            enabled = isBackEnabled,
                             modifier = Modifier.testTag("nav_back")
                         ) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                            Icon(
+                                Icons.Default.ArrowBack,
+                                contentDescription = "Back",
+                                tint = if (isBackEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
                         }
 
                         IconButton(
@@ -172,9 +206,14 @@ fun BrowserScreen(
 
                         IconButton(
                             onClick = { viewModel.triggerGoForward() },
+                            enabled = canGoForward,
                             modifier = Modifier.testTag("nav_forward")
                         ) {
-                            Icon(Icons.Default.ArrowForward, contentDescription = "Forward")
+                            Icon(
+                                Icons.Default.ArrowForward,
+                                contentDescription = "Forward",
+                                tint = if (canGoForward) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
                         }
 
                         IconButton(
@@ -210,16 +249,24 @@ fun BrowserScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (currentUrl == "about:home" || currentUrl.isBlank() || activeTab == null) {
-                HomePage(
-                    viewModel = viewModel,
-                    onNavigate = { url -> viewModel.onUrlSubmitted(url) }
-                )
-            } else {
+            // Persistent WebContainer for active tab
+            if (activeTab != null) {
                 WebContainer(
                     tab = activeTab,
                     viewModel = viewModel,
                     onFileChooser = onFileChooser
+                )
+            }
+
+            // Display HomePage over WebView when on about:home or when tab is empty
+            if (currentUrl == "about:home" || currentUrl.isBlank() || activeTab == null) {
+                HomePage(
+                    viewModel = viewModel,
+                    onNavigate = { url ->
+                        isEditingUrl = false
+                        keyboardController?.hide()
+                        viewModel.onUrlSubmitted(url)
+                    }
                 )
             }
 
@@ -238,7 +285,7 @@ fun BrowserScreen(
                     ) {
                         Column(modifier = Modifier.padding(8.dp)) {
                             Text(
-                                text = "Local Suggestions",
+                                text = "Suggestions",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -252,6 +299,7 @@ fun BrowserScreen(
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable {
                                             isEditingUrl = false
+                                            keyboardController?.hide()
                                             viewModel.onUrlSubmitted(sug)
                                         }
                                 )
@@ -359,6 +407,14 @@ fun BrowserTopBar(
     onSecurityClick: () -> Unit,
     onMenuClick: () -> Unit
 ) {
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(isEditing) {
+        if (isEditing) {
+            focusRequester.requestFocus()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -390,7 +446,7 @@ fun BrowserTopBar(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier
                     .weight(1f)
-                    .height(42.dp)
+                    .height(44.dp)
                     .clickable(enabled = !isEditing, onClick = onStartEdit)
             ) {
                 Row(
@@ -409,33 +465,72 @@ fun BrowserTopBar(
                     }
 
                     if (isEditing) {
-                        TextField(
+                        BasicTextField(
                             value = urlInput,
                             onValueChange = onUrlInputChange,
                             singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface
                             ),
-                            placeholder = { Text("Search or type URL...") },
-                            modifier = Modifier.weight(1f)
+                            cursorBrush = SolidColor(CyberCyan),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Uri,
+                                imeAction = ImeAction.Go,
+                                autoCorrect = false
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onGo = { onSubmit() }
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(focusRequester),
+                            decorationBox = { innerTextField ->
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    if (urlInput.isEmpty()) {
+                                        Text(
+                                            text = "Search or type URL...",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            }
                         )
-                        IconButton(onClick = onSubmit, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.ArrowForward, contentDescription = "Go", tint = CyberCyan)
+
+                        if (urlInput.isNotEmpty()) {
+                            IconButton(
+                                onClick = { onUrlInputChange("") },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                            }
                         }
-                        IconButton(onClick = onCancelEdit, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel")
+
+                        IconButton(
+                            onClick = onSubmit,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.ArrowForward, contentDescription = "Go", tint = CyberCyan, modifier = Modifier.size(18.dp))
+                        }
+
+                        IconButton(
+                            onClick = onCancelEdit,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel", modifier = Modifier.size(18.dp))
                         }
                     } else {
                         Text(
-                            text = if (url == "about:home") "Search or enter URL" else url,
+                            text = if (url == "about:home" || url.isBlank()) "Search or enter URL" else url,
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
-                            color = if (url == "about:home") MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+                            color = if (url == "about:home" || url.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -542,29 +637,29 @@ fun BrowserOverflowMenu(
         onDismissRequest = onDismiss
     ) {
         DropdownMenuItem(
-            text = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = isDesktopSite, onCheckedChange = { onToggleDesktop() })
-                    Text("Desktop Site")
-                }
+            text = { Text(if (isDesktopSite) "Desktop site (Enabled)" else "Desktop site") },
+            leadingIcon = { Icon(Icons.Default.DesktopWindows, contentDescription = null) },
+            trailingIcon = {
+                Checkbox(checked = isDesktopSite, onCheckedChange = { onToggleDesktop() })
             },
             onClick = onToggleDesktop
         )
         DropdownMenuItem(
-            text = { Text("Keep Alive (Background)") },
-            leadingIcon = { Icon(Icons.Default.Sync, contentDescription = null, tint = SecurityGreen) },
+            text = { Text("Keep Alive / Background") },
+            leadingIcon = { Icon(Icons.Default.Sync, contentDescription = null) },
             onClick = onKeepAlive
         )
         DropdownMenuItem(
             text = { Text("Bookmark Page") },
-            leadingIcon = { Icon(Icons.Default.BookmarkBorder, contentDescription = null) },
+            leadingIcon = { Icon(Icons.Default.Bookmark, contentDescription = null) },
             onClick = onBookmark
         )
         DropdownMenuItem(
             text = { Text("Find in Page") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            leadingIcon = { Icon(Icons.Default.FindInPage, contentDescription = null) },
             onClick = onFindInPage
         )
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Share") },
             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
@@ -575,7 +670,7 @@ fun BrowserOverflowMenu(
             leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
             onClick = onCopyUrl
         )
-        Divider()
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Downloads") },
             leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
@@ -587,12 +682,7 @@ fun BrowserOverflowMenu(
             onClick = onOpenHistory
         )
         DropdownMenuItem(
-            text = { Text("Keep Alive Sites") },
-            leadingIcon = { Icon(Icons.Default.Language, contentDescription = null, tint = CyberCyan) },
-            onClick = onOpenBackgroundSites
-        )
-        DropdownMenuItem(
-            text = { Text("Custom DNS") },
+            text = { Text("DNS Settings") },
             leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null) },
             onClick = onOpenDns
         )
@@ -602,14 +692,20 @@ fun BrowserOverflowMenu(
             onClick = onOpenSecurity
         )
         DropdownMenuItem(
-            text = { Text("Developer Mode") },
-            leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) },
-            onClick = onOpenDeveloperMode
+            text = { Text("Background Sites") },
+            leadingIcon = { Icon(Icons.Default.CloudQueue, contentDescription = null) },
+            onClick = onOpenBackgroundSites
         )
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Settings") },
             leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
             onClick = onOpenSettings
+        )
+        DropdownMenuItem(
+            text = { Text("Developer Mode") },
+            leadingIcon = { Icon(Icons.Default.DeveloperMode, contentDescription = null) },
+            onClick = onOpenDeveloperMode
         )
     }
 }
